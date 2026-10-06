@@ -1,112 +1,104 @@
-import pandas as pd, numpy as np, joblib, os
-from sklearn.model_selection import train_test_split, RandomizedSearchCV, KFold
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.ensemble import RandomForestRegressor
+"""Train and evaluate the Steam game price model."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
 from math import sqrt
-np.random.seed(42)
+import sys
 
-# === Caminhos ===
-BASE = os.path.dirname(os.path.dirname(__file__)) if "__file__" in globals() else "."
-DATA = os.path.join(BASE, "data", "steam.csv")
-MODEL_OUT = os.path.join(BASE, "models", "final_steam_model.pkl")
+import joblib
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.model_selection import KFold, RandomizedSearchCV, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
 
-print("Carregando dataset...")
-df = pd.read_csv(DATA, low_memory=False)
+ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = ROOT / "data/steam.csv"
+MODEL_PATH = ROOT / "models/final_steam_model.pkl"
+sys.path.insert(0, str(ROOT))
 
-# === Criação de features ===
-print("Gerando features...")
+from app.features import FEATURES, NUMERIC_FEATURES, TARGET, current_reference_year, prepare_training_data
 
-# 1. Donos médios (faixa -> média numérica)
-def parse_owners(x):
-    try:
-        a, b = x.split('-')
-        return (int(a) + int(b)) / 2
-    except:
-        return np.nan
 
-df["owners_mean"] = df["owners"].apply(parse_owners) if "owners" in df.columns else np.nan
+def train(data_path: Path = DATA_PATH, model_path: Path = MODEL_PATH, reference_year: int | None = None):
+    if reference_year is None:
+        reference_year = current_reference_year()
+    if not data_path.is_file():
+        raise FileNotFoundError(f"Dataset não encontrado: {data_path}")
 
-# 2. Log do tempo médio jogado
-if "average_playtime" in df.columns:
-    df["log_playtime"] = np.log1p(df["average_playtime"])
-elif "average_playtime_forever" in df.columns:
-    df["log_playtime"] = np.log1p(df["average_playtime_forever"])
-else:
-    df["log_playtime"] = 0
+    print(f"Carregando {data_path}...")
+    raw = pd.read_csv(data_path, low_memory=False)
+    data = prepare_training_data(raw, reference_year=reference_year)
+    print(f"Dataset preparado: {len(data):,} jogos; ano de referência: {reference_year}.")
 
-# 3. Avaliações e data de lançamento
-df["review_total"] = df["positive_ratings"] + df["negative_ratings"]
-df["review_ratio"] = df["positive_ratings"] / (df["review_total"] + 1)
+    X = data[FEATURES]
+    y = data[TARGET]
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
 
-# Corrige extração do ano
-if "release_year" in df.columns:
-    df["years_since_release"] = 2025 - df["release_year"]
-elif "release_date" in df.columns:
-    df["release_year"] = pd.to_datetime(df["release_date"], errors="coerce").dt.year
-    df["years_since_release"] = 2025 - df["release_year"]
-else:
-    df["years_since_release"] = np.nan
+    preprocessor = ColumnTransformer(
+        [
+            ("num", "passthrough", NUMERIC_FEATURES),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), ["genres"]),
+        ]
+    )
+    pipeline = Pipeline(
+        [
+            ("preprocessor", preprocessor),
+            ("model", RandomForestRegressor(random_state=42, n_jobs=-1)),
+        ]
+    )
+    param_distributions = {
+        "model__n_estimators": [200, 300, 400],
+        "model__max_depth": [10, 15, 20, None],
+        "model__min_samples_split": [2, 5, 10],
+        "model__min_samples_leaf": [1, 2, 4],
+    }
+    search = RandomizedSearchCV(
+        pipeline,
+        param_distributions,
+        n_iter=10,
+        cv=KFold(n_splits=5, shuffle=True, random_state=42),
+        scoring="r2",
+        random_state=42,
+        n_jobs=-1,
+    )
+    print("Executando busca de hiperparâmetros (10 combinações, 5-fold CV)...")
+    search.fit(X_train, y_train)
 
-# === Seleção de colunas ===
-features = [
-    "owners_mean",
-    "review_ratio",
-    "review_total",
-    "log_playtime",
-    "years_since_release",
-    "genres"
-]
+    predictions = search.predict(X_test)
+    r2 = r2_score(y_test, predictions)
+    rmse = sqrt(mean_squared_error(y_test, predictions))
+    print(f"Melhores parâmetros: {search.best_params_}")
+    print(f"R² no conjunto de teste: {r2:.3f}")
+    print(f"RMSE no conjunto de teste: {rmse:.2f}")
 
-dfm = df[features + ["price"]].dropna()
-print(f"Dataset pronto com {dfm.shape[0]} linhas e {dfm.shape[1]} colunas.")
+    model_path = Path(model_path)
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(
+        {"estimator": search.best_estimator_, "reference_year": reference_year},
+        model_path,
+    )
+    print(f"Modelo salvo em: {model_path}")
+    return search.best_estimator_, {"r2": r2, "rmse": rmse, "reference_year": reference_year}
 
-# === Split ===
-X = dfm.drop("price", axis=1)
-y = dfm["price"]
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# === Pré-processamento ===
-num_features = ["owners_mean", "review_ratio", "review_total", "log_playtime", "years_since_release"]
-cat_features = ["genres"]
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--reference-year",
+        type=int,
+        default=current_reference_year(),
+        help="Ano usado para calcular a idade dos jogos (padrão: ano atual).",
+    )
+    args = parser.parse_args()
+    train(reference_year=args.reference_year)
 
-preprocessor = ColumnTransformer([
-    ("num", "passthrough", num_features),
-    ("cat", OneHotEncoder(handle_unknown="ignore"), cat_features)
-])
 
-# === Modelo e tuning ===
-rf = RandomForestRegressor(random_state=42, n_jobs=-1)
-params = {
-    "model__n_estimators": [200, 300, 400],
-    "model__max_depth": [10, 15, 20, None],
-    "model__min_samples_split": [2, 5, 10],
-    "model__min_samples_leaf": [1, 2, 4]
-}
-
-pipe = Pipeline([
-    ("preprocessor", preprocessor),
-    ("model", rf)
-])
-
-cv = KFold(n_splits=5, shuffle=True, random_state=42)
-search = RandomizedSearchCV(pipe, params, n_iter=10, cv=cv, scoring="r2", random_state=42, n_jobs=-1)
-
-print("Treinando modelo...")
-search.fit(X_train, y_train)
-
-# === Avaliação ===
-y_pred = search.predict(X_test)
-rmse = sqrt(mean_squared_error(y_test, y_pred))
-r2 = r2_score(y_test, y_pred)
-
-print("\nResultados:")
-print(f"R²: {r2:.3f}")
-print(f"RMSE: {rmse:.2f}")
-
-# === Salvar modelo ===
-os.makedirs(os.path.join(BASE, "models"), exist_ok=True)
-joblib.dump(search.best_estimator_, MODEL_OUT)
-print(f"Modelo salvo em: {MODEL_OUT}")
+if __name__ == "__main__":
+    main()

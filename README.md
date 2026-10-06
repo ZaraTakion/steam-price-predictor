@@ -1,110 +1,68 @@
-# 🎮 Steam Price Predictor
+# Steam Price Predictor
 
-Um projeto de **Ciência de Dados + Streamlit** que prevê o preço provável de um jogo na Steam com base em estatísticas públicas: número de donos, avaliações positivas/negativas, tempo médio jogado, ano de lançamento e gênero.
+Demonstração de ciência de dados que estima o preço histórico de jogos a partir de dados tabulares. O projeto compara configurações de `RandomForestRegressor` com `RandomizedSearchCV`, avalia o melhor estimador em um conjunto de teste separado e oferece uma interface Streamlit.
 
----
+> A previsão é uma demonstração educacional baseada no dataset versionado. Não consulta a loja Steam e não deve ser interpretada como preço atual ou recomendação de compra.
 
-## 🚀 Visão Geral
+## Requisitos
 
-O projeto aplica **aprendizado de máquina supervisionado** (Random Forest Regressor) sobre mais de **24 mil jogos** coletados da Steam.  
-A aplicação web (via **Streamlit**) permite prever o preço de um jogo e explorar visualmente os dados.
+- Python 3.11
+- Git
 
----
+O dataset usado pelo exemplo está versionado em `data/steam.csv`; não é necessário obter uma chave de API ou baixar dados adicionais.
 
-## 📁 Estrutura do Projeto
+## Demonstração local reproduzível
 
-```
-steam_price_predictor/
-│
-├── app/
-│   ├── app.py                 # Interface Streamlit
-│   └── steam_price_model.pkl  # Modelo local (opcional)
-│
-├── data/
-│   └── steam.csv              # Dataset principal
-│
-├── models/
-│   └── final_steam_model.pkl  # Modelo final salvo
-│
-├── scripts/
-│   └── train.py               # Script de treinamento
-│
-├── notebooks/
-│   └── EDA.ipynb              # Análise exploratória opcional
-│
-├── requirements.txt
-├── README.md
-└── .gitignore
-```
-
----
-
-## 🧠 Tecnologias Principais
-
-- **Python 3.13**
-- **Pandas / NumPy**
-- **Scikit-learn**
-- **Plotly**
-- **Streamlit**
-- **Joblib**
-
----
-
-## ⚙️ Treinamento do Modelo
+Clone o repositório e execute os comandos a partir da pasta raiz:
 
 ```bash
-cd scripts
-python train.py
+git clone https://github.com/ZaraTakion/steam-price-predictor.git
+cd steam-price-predictor
+python -m venv .venv
 ```
 
-O script:
-1. Faz *feature engineering* (transforma colunas brutas em variáveis úteis).
-2. Executa `RandomizedSearchCV` com 5-fold cross-validation.
-3. Avalia com R² e RMSE.
-4. Salva o pipeline completo em `/models/final_steam_model.pkl`.
-
----
-
-## 🌐 Executando o App
+Ative o ambiente virtual:
 
 ```bash
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+# macOS / Linux
+source .venv/bin/activate
+```
+
+Instale as dependências, treine o modelo com o ano de referência explícito e inicie a aplicação:
+
+```bash
+python -m pip install -r requirements.txt
+python -m scripts.train --reference-year 2026
 streamlit run app/app.py
 ```
 
-Abra o link exibido no terminal (`http://localhost:8501`).
+Abra `http://localhost:8501`. O modelo treinado será salvo em `models/final_steam_model.pkl` e não precisa ser adicionado ao Git.
 
-**No Streamlit Cloud:**  
-garanta que os arquivos estejam em `/app` e `/models`, e o dataset no repositório (para demonstração local).
+O ano passado em `--reference-year` é usado no cálculo `ano de referência - ano de lançamento`. O app lê esse ano salvo junto ao modelo, então treino e demonstração usam a mesma referência. Use o mesmo comando para reproduzir essa configuração em outras máquinas. Sem argumento, o script usa o ano atual; nesse caso, a feature de idade e os resultados podem mudar com o passar dos anos.
 
----
+O ajuste faz 10 combinações aleatórias com validação cruzada de 5 partes e usa `random_state=42` no split, na busca e no Random Forest. A etapa de treino pode levar alguns minutos, dependendo do computador. Ao final, o terminal imprime os melhores parâmetros, R² e RMSE do teste; esses valores são medidos na execução e não são fixados como resultados garantidos.
 
-## 📊 Recursos da Aplicação
+## O que o treino mede
 
-- **Predição de preço** com base em entradas personalizáveis.
-- **Visualização das features mais relevantes.**
-- **Comparativo de múltiplos cenários.**
-- **Exploração interativa de datasets carregados.**
+As features são estimativa média de proprietários, proporção e total de avaliações, log do tempo médio jogado, idade do jogo e gênero. O preço é o alvo. O app constrói exatamente as mesmas colunas antes de chamar o modelo.
 
----
+## Testes
 
-## 📈 Métricas de Desempenho
+Os testes usam pequenos dados sintéticos e não executam a busca custosa de hiperparâmetros:
 
-- **Modelo:** RandomForestRegressor  
-- **R²:** ≈ 0.75  
-- **RMSE:** ≈ 4.5  
-- **Dataset:** Steam Games (SteamSpy)
+```bash
+python -m unittest discover -s tests -v
+```
 
----
+## Estrutura
 
-## 🧩 Melhorias Futuras
-
-- Normalização automática de novas colunas (`support for DLC, VR`).
-- Deploy contínuo no **Streamlit Cloud** com CI/CD.
-- API REST (FastAPI) para integração externa.
-- Visual analytics mais detalhado com `plotly.subplots`.
-
----
-
-## 🧑‍💻 Autor
-
-Desenvolvido por **Zara Takion** — estudante de Sistemas para Internet e entusiasta de dados e web design.
+```text
+app/                 Interface Streamlit e features partilhadas
+data/steam.csv       Dataset de demonstração versionado
+scripts/train.py     Treino, busca e avaliação
+tests/               Testes de features e entradas do modelo
+models/               Modelo treinado (gerado localmente)
+```
